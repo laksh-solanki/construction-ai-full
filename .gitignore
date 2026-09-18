@@ -1,0 +1,44 @@
+# Dependencies & Virtual Environments
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+.expo/
+
+# Secrets & Environment Variables
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.p12
+*.id_rsa
+
+# Local Databases & Caches
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads & Generated Reports
+uploads/*
+generated_reports/*
+backend/uploads/*
+backend/generated_reports/*
+!uploads/.gitkeep
+!generated_reports/.gitkeep
+!backend/uploads/.gitkeep
+!backend/generated_reports/.gitkeep
+
+# Large Archives & Compressed files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
