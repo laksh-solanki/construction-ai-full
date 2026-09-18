@@ -146,3 +146,64 @@ def verify_token(token: str) -> Optional[Dict[str, Any]]:
             pass
 
     return None
+
+# -------------------------------------------------------------
+# Supabase Storage Integration (Photos & Documents)
+# -------------------------------------------------------------
+DEFAULT_BUCKET = "buildsight-media"
+
+def ensure_storage_bucket(bucket_name: str = DEFAULT_BUCKET, is_public: bool = True) -> bool:
+    """Ensure the Supabase storage bucket exists. Creates it as public if missing."""
+    if not is_supabase_configured():
+        return False
+    url = f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1/bucket"
+    headers = get_supabase_headers()
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            existing = [b.get("id") or b.get("name") for b in res.json()]
+            if bucket_name in existing:
+                return True
+        # Create bucket
+        payload = {"id": bucket_name, "name": bucket_name, "public": is_public}
+        create_res = requests.post(url, headers=headers, json=payload, timeout=10)
+        return create_res.status_code in (200, 201)
+    except Exception as exc:
+        logger.error(f"Error ensuring storage bucket '{bucket_name}': {exc}")
+        return False
+
+def upload_file_to_supabase(
+    file_bytes: bytes,
+    storage_path: str,
+    content_type: str = "image/jpeg",
+    bucket_name: str = DEFAULT_BUCKET
+) -> Optional[str]:
+    """Uploads a file directly to Supabase Storage and returns its public URL."""
+    if not is_supabase_configured():
+        return None
+    
+    clean_path = storage_path.lstrip('/')
+    url = f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket_name}/{clean_path}"
+    headers = {
+        **get_supabase_headers(),
+        "Content-Type": content_type,
+        "x-upsert": "true"
+    }
+    try:
+        res = requests.post(url, headers=headers, data=file_bytes, timeout=15)
+        if res.status_code in (200, 201):
+            public_url = f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket_name}/{clean_path}"
+            logger.info(f"Uploaded to Supabase Storage ({clean_path}): {public_url}")
+            return public_url
+        else:
+            logger.warning(f"Supabase Storage upload failed ({res.status_code}): {res.text}")
+            return None
+    except Exception as exc:
+        logger.error(f"Supabase Storage upload error: {exc}")
+        return None
+
+def get_storage_public_url(storage_path: str, bucket_name: str = DEFAULT_BUCKET) -> str:
+    """Returns the direct public CDN URL for a file in Supabase Storage."""
+    clean_path = storage_path.lstrip('/')
+    return f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket_name}/{clean_path}"
+

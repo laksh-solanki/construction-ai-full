@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, Request, status, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -37,7 +37,10 @@ from .supabase_client import (
     is_supabase_configured,
     supabase_signup,
     supabase_login,
-    supabase_reset_password
+    supabase_reset_password,
+    ensure_storage_bucket,
+    upload_file_to_supabase,
+    get_storage_public_url
 )
 from .ai import analyze_image
 from .report import make_pdf
@@ -139,22 +142,25 @@ def serve_upload(filename: str):
         raise HTTPException(status_code=403, detail="File type not permitted for viewing.")
 
     target = UPLOAD_DIR / safe_name
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found.")
+    if target.exists() and target.is_file():
+        ext = target.suffix.lower()
+        media_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp"
+        }
+        media_type = media_map.get(ext, "application/octet-stream")
+        return FileResponse(
+            target,
+            media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff", "Content-Disposition": "inline"}
+        )
 
-    ext = target.suffix.lower()
-    media_map = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp"
-    }
-    media_type = media_map.get(ext, "application/octet-stream")
-    return FileResponse(
-        target,
-        media_type=media_type,
-        headers={"X-Content-Type-Options": "nosniff", "Content-Disposition": "inline"}
-    )
+    if is_supabase_configured():
+        return RedirectResponse(url=get_storage_public_url(f"photos/{safe_name}"))
+
+    raise HTTPException(status_code=404, detail="File not found.")
 
 def seed(db: Session):
     if not db.query(User).count():
@@ -328,6 +334,8 @@ def ensure_schema():
 @app.on_event('startup')
 def startup():
     ensure_schema()
+    if is_supabase_configured():
+        ensure_storage_bucket()
     db = next(get_db())
     try:
         seed(db)
@@ -825,6 +833,16 @@ async def analyze(
     with stored_path.open('wb') as f_out:
         f_out.write(contents)
 
+    # Supabase Cloud Storage Upload (Photos)
+    supabase_img_url = None
+    if is_supabase_configured():
+        content_type_val = f"image/{'jpeg' if img_format in ('jpeg', 'jpg') else img_format}"
+        supabase_img_url = upload_file_to_supabase(
+            bytes(contents),
+            f"photos/{stored_filename}",
+            content_type=content_type_val
+        )
+
     # Computer Vision Analysis
     result = analyze_image(str(stored_path))
     ai = float(result['progress'])
@@ -858,7 +876,7 @@ async def analyze(
     db.add(Evidence(
         report_id=r.id,
         filename=safe_original_name,
-        stored_path=str(stored_path),
+        stored_path=supabase_img_url or str(stored_path),
         latitude=latitude,
         longitude=longitude
     ))
@@ -891,6 +909,7 @@ async def analyze(
         'risk': risk,
         'file': safe_original_name,
         'image_url': f'/uploads/{stored_filename}',
+        'storage_url': supabase_img_url,
         'weather': weather,
         'latitude': latitude,
         'longitude': longitude,
@@ -908,7 +927,21 @@ def pdf(report_id: int = Path(..., gt=0), db: Session = Depends(get_db)):
     p = db.get(Project, r.project_id)
     a = db.get(Activity, r.activity_id) if r.activity_id else None
     path = make_pdf(r, p, a, r.evidence, r.detections, REPORT_DIR)
+    
+    # Upload PDF document to Supabase Storage
+    if is_supabase_configured():
+        try:
+            with open(path, 'rb') as pdf_file:
+                upload_file_to_supabase(
+                    pdf_file.read(),
+                    f"documents/{path.name}",
+                    content_type="application/pdf"
+                )
+        except Exception as upload_err:
+            logger.warning(f"Could not upload PDF document to Supabase Storage: {upload_err}")
+
     return FileResponse(path, media_type='application/pdf', filename=path.name)
+
 
 @app.get('/api/forecast', dependencies=[Depends(rate_limit_authenticated)])
 def forecast(project_id: int = 1, db: Session = Depends(get_db)):
